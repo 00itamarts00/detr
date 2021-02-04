@@ -326,7 +326,7 @@ def build(args):
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
     matcher = build_matcher(args)
-    weight_dict = {'loss_ce': 1, 'loss_bbox': args.bbox_loss_coef}
+    weight_dict = {'loss_ce': args.label_loss_coef, 'loss_coords': args.bbox_loss_coef}
     weight_dict['loss_giou'] = args.giou_loss_coef
     if args.masks:
         weight_dict["loss_mask"] = args.mask_loss_coef
@@ -350,5 +350,8 @@ def build(args):
         if args.dataset_file == "coco_panoptic":
             is_thing_map = {i: i <= 90 for i in range(201)}
             postprocessors["panoptic"] = PostProcessPanoptic(is_thing_map, threshold=0.85)
+
+    for param in model.parameters():
+        param.requires_grad = True
 
     return model, criterion, postprocessors
