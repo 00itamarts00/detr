@@ -86,7 +86,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth coords and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
-    def __init__(self, num_classes, matcher, weight_dict, eos_coef, losses):
+    def __init__(self, num_classes, weight_dict, eos_coef, losses):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -97,7 +97,6 @@ class SetCriterion(nn.Module):
         """
         super().__init__()
         self.num_classes = num_classes
-        self.matcher = matcher
         self.weight_dict = weight_dict
         self.eos_coef = eos_coef
         self.losses = losses
@@ -105,15 +104,14 @@ class SetCriterion(nn.Module):
         empty_weight[-1] = self.eos_coef
         self.register_buffer('empty_weight', empty_weight)
 
-    def loss_labels(self, outputs, targets, indices, num_coords, log=True):
+    def loss_labels(self, outputs, targets, num_coords, log=True):
         """Classification loss (NLL)
         targets dicts must contain the key "labels" containing a tensor of dim [nb_target_coords]
         """
         assert 'pred_logits' in outputs
         src_logits = outputs['pred_logits']
 
-        idx = self._get_src_permutation_idx(indices)
-        target_classes_o = torch.cat([t["labels"][J] for t, (_, J) in zip(targets, indices)])
+        target_classes_o = targets[0]['labels']
         target_classes = torch.full(src_logits.shape[:2], self.num_classes,
                                     dtype=torch.int64, device=src_logits.device)
         target_classes[idx] = target_classes_o.type(dtype=torch.LongTensor).cuda()
@@ -139,20 +137,17 @@ class SetCriterion(nn.Module):
         losses = {'cardinality_error': card_err}
         return losses
 
-    def loss_coords(self, outputs, targets, indices, num_coords):
+    def loss_coords(self, outputs, targets, num_coords):
         """Compute the losses related to the coords, the L1 regression loss and the GIoU loss
            targets dicts must contain the key "coords" containing a tensor of dim [nb_target_coords, 4]
            The target coords are expected in format (center_x, center_y, w, h), normalized by the image size.
         """
         assert 'pred_coords' in outputs
-        idx = self._get_src_permutation_idx(indices)
-        src_coords = outputs['pred_coords'][idx]
-        target_coords = torch.cat([t['coords'][i] for t, (_, i) in zip(targets, indices)], dim=0)
+        src_coords = outputs['pred_coords']
+        target_coords = targets[0]['coords']
         loss_coords = F.l1_loss(src_coords, target_coords, reduction='none')
 
-        losses = {}
-        losses['loss_coords'] = loss_coords.sum() / num_coords
-
+        losses = {'loss_coords': loss_coords.sum() / num_coords}
         return losses
 
     def loss_masks(self, outputs, targets, indices, num_coords):
@@ -196,7 +191,7 @@ class SetCriterion(nn.Module):
         tgt_idx = torch.cat([tgt for (_, tgt) in indices])
         return batch_idx, tgt_idx
 
-    def get_loss(self, loss, outputs, targets, indices, num_coords, **kwargs):
+    def get_loss(self, loss, outputs, targets, num_coords, **kwargs):
         loss_map = {
             'labels': self.loss_labels,
             'cardinality': self.loss_cardinality,
@@ -204,7 +199,7 @@ class SetCriterion(nn.Module):
             'masks': self.loss_masks
         }
         assert loss in loss_map, f'do you really want to compute {loss} loss?'
-        return loss_map[loss](outputs, targets, indices, num_coords, **kwargs)
+        return loss_map[loss](outputs, targets, num_coords, **kwargs)
 
     def forward(self, outputs, targets):
         """ This performs the loss computation.
@@ -214,9 +209,6 @@ class SetCriterion(nn.Module):
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
-
-        # Retrieve the matching between the outputs of the last layer and the targets
-        indices = self.matcher(outputs_without_aux, targets)
 
         # Compute the average number of target coords across all nodes, for normalization purposes
         num_coords = sum(len(t["labels"]) for t in targets)
@@ -228,12 +220,11 @@ class SetCriterion(nn.Module):
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, targets, indices, num_coords))
+            losses.update(self.get_loss(loss, outputs, targets, num_coords))
 
         # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
         if 'aux_outputs' in outputs:
             for i, aux_outputs in enumerate(outputs['aux_outputs']):
-                indices = self.matcher(aux_outputs, targets)
                 for loss in self.losses:
                     if loss == 'masks':
                         # Intermediate masks losses are too costly to compute, we ignore them.
@@ -242,7 +233,7 @@ class SetCriterion(nn.Module):
                     if loss == 'labels':
                         # Logging is enabled only for the last layer
                         kwargs = {'log': False}
-                    l_dict = self.get_loss(loss, aux_outputs, targets, indices, num_coords, **kwargs)
+                    l_dict = self.get_loss(loss, aux_outputs, targets, num_coords, **kwargs)
                     l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
                     losses.update(l_dict)
 
@@ -338,10 +329,10 @@ def build(args):
             aux_weight_dict.update({k + f'_{i}': v for k, v in weight_dict.items()})
         weight_dict.update(aux_weight_dict)
 
-    losses = ['labels', 'coords', 'cardinality']
+    losses = ['coords']
     if args.masks:
         losses += ["masks"]
-    criterion = SetCriterion(num_classes, matcher=matcher, weight_dict=weight_dict,
+    criterion = SetCriterion(num_classes, weight_dict=weight_dict,
                              eos_coef=args.eos_coef, losses=losses)
     criterion.to(device)
     postprocessors = {'bbox': PostProcess()}
