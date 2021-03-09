@@ -8,9 +8,8 @@ from torch import nn
 
 from packages.detr.util import box_ops
 from packages.detr.util.misc import (NestedTensor, nested_tensor_from_tensor_list,
-                       accuracy, get_world_size, interpolate,
-                       is_dist_avail_and_initialized)
-
+                                     accuracy, get_world_size, interpolate,
+                                     is_dist_avail_and_initialized)
 from .backbone import build_backbone
 from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
@@ -20,6 +19,7 @@ from .transformer import build_transformer
 
 class DETR(nn.Module):
     """ This is the DETR module that performs object detection """
+
     def __init__(self, backbone, transformer, num_classes, num_queries, aux_loss=False):
         """ Initializes the model.
         Parameters:
@@ -86,6 +86,7 @@ class SetCriterion(nn.Module):
         1) we compute hungarian assignment between ground truth coords and the outputs of the model
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
+
     def __init__(self, num_classes, weight_dict, eos_coef, losses):
         """ Create the criterion.
         Parameters:
@@ -144,7 +145,7 @@ class SetCriterion(nn.Module):
         """
         assert 'pred_coords' in outputs
         src_coords = outputs['pred_coords']
-        target_coords = targets[0]['coords']
+        target_coords = targets['coords']
         loss_coords = F.l1_loss(src_coords, target_coords, reduction='none')
 
         losses = {'loss_coords': loss_coords.sum() / num_coords}
@@ -211,7 +212,7 @@ class SetCriterion(nn.Module):
         outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
         # Compute the average number of target coords across all nodes, for normalization purposes
-        num_coords = sum(len(t["labels"]) for t in targets)
+        num_coords = sum([len(t) for t in targets['labels']])
         num_coords = torch.as_tensor([num_coords], dtype=torch.float, device=next(iter(outputs.values())).device)
         if is_dist_avail_and_initialized():
             torch.distributed.all_reduce(num_coords)
@@ -242,6 +243,7 @@ class SetCriterion(nn.Module):
 
 class PostProcess(nn.Module):
     """ This module converts the model's output into the format expected by the coco api"""
+
     @torch.no_grad()
     def forward(self, outputs, target_sizes):
         """ Perform the computation
