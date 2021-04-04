@@ -116,7 +116,7 @@ class SetCriterion(nn.Module):
         src_coords = outputs['pred_coords'] if self.multi_dec_loss else outputs['pred_coords'][-1].unsqueeze(0)
         target_coords = targets['coords']
         loss_coords = [F.l1_loss(src_coords_iter, target_coords, reduction='none') for src_coords_iter in src_coords]
-        dec_loss = {i: l.cpu().detach().numpy() for i, l in enumerate(loss_coords)}
+        dec_loss = {f'dec_head_loss_{i}': l.cpu().detach().numpy().sum() / num_coords for i, l in enumerate(loss_coords)}
         losses = {'loss_coords': sum(sum(sum(sum(loss_coords)))) / num_coords}
         losses.update(dec_loss)
         return losses
