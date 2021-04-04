@@ -66,7 +66,8 @@ class DETR(nn.Module):
 
         outputs_class = self.class_embed(hs)
         outputs_coord = self.bbox_embed(hs).sigmoid()
-        out = {'pred_logits': outputs_class[-1], 'pred_coords': outputs_coord[-1]}
+        out = {'pred_logits': outputs_class, 'pred_coords': outputs_coord}
+
         if self.aux_loss:
             out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
         return out
@@ -87,7 +88,7 @@ class SetCriterion(nn.Module):
         2) we supervise each pair of matched ground-truth / prediction (supervise class and box)
     """
 
-    def __init__(self, num_classes, weight_dict, eos_coef, losses):
+    def __init__(self, num_classes, weight_dict, eos_coef, losses, multi_dec_loss):
         """ Create the criterion.
         Parameters:
             num_classes: number of object categories, omitting the special no-object category
@@ -101,42 +102,10 @@ class SetCriterion(nn.Module):
         self.weight_dict = weight_dict
         self.eos_coef = eos_coef
         self.losses = losses
+        self.multi_dec_loss = multi_dec_loss
         empty_weight = torch.ones(self.num_classes + 1)
         empty_weight[-1] = self.eos_coef
         self.register_buffer('empty_weight', empty_weight)
-
-    def loss_labels(self, outputs, targets, num_coords, log=True):
-        """Classification loss (NLL)
-        targets dicts must contain the key "labels" containing a tensor of dim [nb_target_coords]
-        """
-        assert 'pred_logits' in outputs
-        src_logits = outputs['pred_logits']
-
-        target_classes_o = targets[0]['labels']
-        target_classes = torch.full(src_logits.shape[:2], self.num_classes,
-                                    dtype=torch.int64, device=src_logits.device)
-        target_classes[idx] = target_classes_o.type(dtype=torch.LongTensor).cuda()
-
-        loss_ce = F.cross_entropy(src_logits.transpose(1, 2), target_classes, self.empty_weight)
-        losses = {'loss_ce': loss_ce}
-
-        # TODO this should probably be a separate loss, not hacked in this one here
-        losses['class_error'] = 100 - accuracy(src_logits[idx], target_classes_o)[0]
-        return losses
-
-    @torch.no_grad()
-    def loss_cardinality(self, outputs, targets, indices, num_coords):
-        """ Compute the cardinality error, ie the absolute error in the number of predicted non-empty coords
-        This is not really a loss, it is intended for logging purposes only. It doesn't propagate gradients
-        """
-        pred_logits = outputs['pred_logits']
-        device = pred_logits.device
-        tgt_lengths = torch.as_tensor([len(v["labels"]) for v in targets], device=device)
-        # Count the number of predictions that are NOT "no-object" (which is the last class)
-        card_pred = (pred_logits.argmax(-1) != pred_logits.shape[-1] - 1).sum(1)
-        card_err = F.l1_loss(card_pred.float(), tgt_lengths.float())
-        losses = {'cardinality_error': card_err}
-        return losses
 
     def loss_coords(self, outputs, targets, num_coords):
         """Compute the losses related to the coords, the L1 regression loss and the GIoU loss
@@ -144,11 +113,12 @@ class SetCriterion(nn.Module):
            The target coords are expected in format (center_x, center_y, w, h), normalized by the image size.
         """
         assert 'pred_coords' in outputs
-        src_coords = outputs['pred_coords']
+        src_coords = outputs['pred_coords'] if self.multi_dec_loss else outputs['pred_coords'][-1].unsqueeze(0)
         target_coords = targets['coords']
-        loss_coords = F.l1_loss(src_coords, target_coords, reduction='none')
-
-        losses = {'loss_coords': loss_coords.sum() / num_coords}
+        loss_coords = [F.l1_loss(src_coords_iter, target_coords, reduction='none') for src_coords_iter in src_coords]
+        dec_loss = {i: l.cpu().detach().numpy() for i, l in enumerate(loss_coords)}
+        losses = {'loss_coords': sum(sum(sum(sum(loss_coords)))) / num_coords}
+        losses.update(dec_loss)
         return losses
 
     def loss_masks(self, outputs, targets, indices, num_coords):
@@ -194,8 +164,6 @@ class SetCriterion(nn.Module):
 
     def get_loss(self, loss, outputs, targets, num_coords, **kwargs):
         loss_map = {
-            'labels': self.loss_labels,
-            'cardinality': self.loss_cardinality,
             'coords': self.loss_coords,
             'masks': self.loss_masks
         }
@@ -318,12 +286,8 @@ def build(args):
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
-    matcher = build_matcher(args)
-    weight_dict = {'loss_ce': args.label_loss_coef, 'loss_coords': args.bbox_loss_coef}
-    weight_dict['loss_giou'] = args.giou_loss_coef
-    if args.masks:
-        weight_dict["loss_mask"] = args.mask_loss_coef
-        weight_dict["loss_dice"] = args.dice_loss_coef
+
+    weight_dict = {'loss_coords': args.coords_loss_coef}
     # TODO this is a hack
     if args.aux_loss:
         aux_weight_dict = {}
@@ -334,8 +298,8 @@ def build(args):
     losses = ['coords']
     if args.masks:
         losses += ["masks"]
-    criterion = SetCriterion(num_classes, weight_dict=weight_dict,
-                             eos_coef=args.eos_coef, losses=losses)
+    criterion = SetCriterion(num_classes, weight_dict=weight_dict, eos_coef=args.eos_coef, losses=losses,
+                             multi_dec_loss=args.multi_dec_loss)
     criterion.to(device)
     postprocessors = {'bbox': PostProcess()}
     if args.masks:
