@@ -40,3 +40,4 @@ eval = False
 num_workers = 0
 world_size = 1
 dist_url = 'env://'
+multi_decoder_head_loss = True
