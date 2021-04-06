@@ -115,9 +115,11 @@ class SetCriterion(nn.Module):
         assert 'pred_coords' in outputs
         src_coords = outputs['pred_coords'] if self.multi_dec_loss else outputs['pred_coords'][-1].unsqueeze(0)
         target_coords = targets['coords']
-        loss_coords = [F.l1_loss(src_coords_iter, target_coords, reduction='none') for src_coords_iter in src_coords]
-        dec_loss = {f'dec_head_loss_{i}': l.cpu().detach().numpy().sum() / num_coords for i, l in enumerate(loss_coords)}
-        losses = {'loss_coords': sum(sum(sum(sum(loss_coords)))) / num_coords}
+        loss_coords = [torch.sum(F.l1_loss(src_coords_iter, target_coords, reduction='none')) / num_coords for
+                       src_coords_iter in src_coords]
+        loss_coords = torch.stack(loss_coords)
+        dec_loss = {f'dec_head_loss_{i}': l for i, l in enumerate(loss_coords)}
+        losses = {'loss_coords': loss_coords.sum()}
         losses.update(dec_loss)
         return losses
 
@@ -149,18 +151,6 @@ class SetCriterion(nn.Module):
             "loss_dice": dice_loss(src_masks, target_masks, num_coords),
         }
         return losses
-
-    def _get_src_permutation_idx(self, indices):
-        # permute predictions following indices
-        batch_idx = torch.cat([torch.full_like(src, i) for i, (src, _) in enumerate(indices)])
-        src_idx = torch.cat([src for (src, _) in indices])
-        return batch_idx, src_idx
-
-    def _get_tgt_permutation_idx(self, indices):
-        # permute targets following indices
-        batch_idx = torch.cat([torch.full_like(tgt, i) for i, (_, tgt) in enumerate(indices)])
-        tgt_idx = torch.cat([tgt for (_, tgt) in indices])
-        return batch_idx, tgt_idx
 
     def get_loss(self, loss, outputs, targets, num_coords, **kwargs):
         loss_map = {
@@ -288,12 +278,6 @@ def build(args):
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
 
     weight_dict = {'loss_coords': args.coords_loss_coef}
-    # TODO this is a hack
-    if args.aux_loss:
-        aux_weight_dict = {}
-        for i in range(args.dec_layers - 1):
-            aux_weight_dict.update({k + f'_{i}': v for k, v in weight_dict.items()})
-        weight_dict.update(aux_weight_dict)
 
     losses = ['coords']
     if args.masks:
