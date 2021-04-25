@@ -53,10 +53,10 @@ class Transformer(nn.Module):
         mask = mask.flatten(1)
 
         tgt = torch.zeros_like(query_embed)
-        memory = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
+        memory, hm_encoder = self.encoder(src, src_key_padding_mask=mask, pos=pos_embed)
         hs = self.decoder(tgt, memory, memory_key_padding_mask=mask,
                           pos=pos_embed, query_pos=query_embed)
-        return hs.transpose(1, 2), memory.permute(1, 2, 0).view(bs, c, h, w)
+        return hs.transpose(1, 2), memory.permute(1, 2, 0).view(bs, c, h, w), hm_encoder
 
 
 class TransformerEncoder(nn.Module):
@@ -72,15 +72,16 @@ class TransformerEncoder(nn.Module):
                 src_key_padding_mask: Optional[Tensor] = None,
                 pos: Optional[Tensor] = None):
         output = src
-
+        hmap_enc_arr = []
         for layer in self.layers:
-            output = layer(output, src_mask=mask,
-                           src_key_padding_mask=src_key_padding_mask, pos=pos)
+            output, hm_encoder = layer(output, src_mask=mask,
+                                       src_key_padding_mask=src_key_padding_mask, pos=pos)
+            hmap_enc_arr.append(hm_encoder)
 
         if self.norm is not None:
             output = self.norm(output)
 
-        return output
+        return output, hmap_enc_arr
 
 
 class TransformerDecoder(nn.Module):
@@ -143,6 +144,8 @@ class TransformerEncoderLayer(nn.Module):
         self.activation = _get_activation_fn(activation)
         self.normalize_before = normalize_before
 
+        self.hm_encoder = EncoderHeatMap()
+
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
         return tensor if pos is None else tensor + pos
 
@@ -180,8 +183,30 @@ class TransformerEncoderLayer(nn.Module):
                 src_key_padding_mask: Optional[Tensor] = None,
                 pos: Optional[Tensor] = None):
         if self.normalize_before:
-            return self.forward_pre(src, src_mask, src_key_padding_mask, pos)
-        return self.forward_post(src, src_mask, src_key_padding_mask, pos)
+            output = self.forward_pre(src, src_mask, src_key_padding_mask, pos)
+        else:
+            output = self.forward_post(src, src_mask, src_key_padding_mask, pos)
+        hm_encoder = self.hm_encoder(output)
+        return output, hm_encoder
+
+
+class EncoderHeatMap(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.block1 = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, stride=(1, 2), padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=False))
+        self.block2 = nn.Sequential(
+            nn.Conv2d(32, 68, kernel_size=3, stride=(1, 2), padding=1),
+            nn.BatchNorm2d(68),
+            nn.ReLU(inplace=False))
+
+    def forward(self, x):
+        x = torch.transpose(x, 0, 1).unsqueeze(1)
+        x = self.block1(x)
+        x = self.block2(x)
+        return x
 
 
 class TransformerDecoderLayer(nn.Module):
