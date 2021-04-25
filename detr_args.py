@@ -17,7 +17,6 @@ nheads = 8
 num_queries = 68
 pre_norm = False
 masks = False
-aux_loss = False
 set_cost_class = 1
 set_cost_coords = 1
 set_cost_giou = 0

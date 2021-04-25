@@ -20,7 +20,7 @@ from .transformer import build_transformer
 class DETR(nn.Module):
     """ This is the DETR module that performs object detection """
 
-    def __init__(self, backbone, transformer, num_classes, num_queries, aux_loss=False):
+    def __init__(self, backbone, transformer, num_classes, num_queries):
         """ Initializes the model.
         Parameters:
             backbone: torch module of the backbone to be used. See backbone.py
@@ -39,7 +39,7 @@ class DETR(nn.Module):
         self.query_embed = nn.Embedding(num_queries, hidden_dim)
         self.input_proj = nn.Conv2d(backbone.num_channels, hidden_dim, kernel_size=1)
         self.backbone = backbone
-        self.aux_loss = aux_loss
+        # self.aux_loss = aux_loss
 
     def forward(self, samples: NestedTensor):
         """ The forward expects a NestedTensor, which consists of:
@@ -68,9 +68,7 @@ class DETR(nn.Module):
         outputs_coord = self.bbox_embed(hs).sigmoid()
         out = {'pred_logits': outputs_class, 'pred_coords': outputs_coord}
 
-        if self.aux_loss:
-            out['aux_outputs'] = self._set_aux_loss(outputs_class, outputs_coord)
-        return out
+        return out, hm_encoder
 
     @torch.jit.unused
     def _set_aux_loss(self, outputs_class, outputs_coord):
@@ -80,6 +78,9 @@ class DETR(nn.Module):
         return [{'pred_logits': a, 'pred_coords': b}
                 for a, b in zip(outputs_class[:-1], outputs_coord[:-1])]
 
+    def hm_loss(self, heatmaps, opts):
+        # TODO: complete this part
+        pass
 
 class SetCriterion(nn.Module):
     """ This class computes the loss for DETR.
@@ -272,7 +273,6 @@ def build(args):
         transformer,
         num_classes=num_classes,
         num_queries=args.num_queries,
-        aux_loss=args.aux_loss,
     )
     if args.masks:
         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
