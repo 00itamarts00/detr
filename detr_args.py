@@ -29,3 +29,4 @@ device = 'cuda'
 seed = 42
 world_size = 1
 multi_dec_loss = True
+multi_enc_loss = True
