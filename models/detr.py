@@ -114,15 +114,13 @@ class SetCriterion(nn.Module):
            The target coords are expected in format (center_x, center_y, w, h), normalized by the image size.
         """
         assert 'pred_coords' in outputs
-        src_coords = outputs['pred_coords'] if self.multi_dec_loss else outputs['pred_coords'][-1].unsqueeze(0)
+        src_coords = outputs['pred_coords']
         target_coords = targets['coords']
         loss_coords = [torch.sum(F.l1_loss(src_coords_iter, target_coords, reduction='none')) / num_coords for
                        src_coords_iter in src_coords]
         loss_coords = torch.stack(loss_coords)
-        dec_loss = {f'dec_head_loss_{i}': l for i, l in enumerate(loss_coords)}
-        losses = {'loss_coords': loss_coords.sum()}
-        losses.update(dec_loss)
-        return losses
+        # dec_loss = {f'dec_head_loss_{i}': l for i, l in enumerate(loss_coords)}
+        return loss_coords
 
     def loss_masks(self, outputs, targets, indices, num_coords):
         """Compute the losses related to the masks: the focal loss and the dice loss.
@@ -168,7 +166,6 @@ class SetCriterion(nn.Module):
              targets: list of dicts, such that len(targets) == batch_size.
                       The expected keys in each dict depends on the losses applied, see each loss' doc
         """
-        outputs_without_aux = {k: v for k, v in outputs.items() if k != 'aux_outputs'}
 
         # Compute the average number of target coords across all nodes, for normalization purposes
         num_coords = sum([len(t) for t in targets['labels']])
@@ -180,22 +177,7 @@ class SetCriterion(nn.Module):
         # Compute all the requested losses
         losses = {}
         for loss in self.losses:
-            losses.update(self.get_loss(loss, outputs, targets, num_coords))
-
-        # In case of auxiliary losses, we repeat this process with the output of each intermediate layer.
-        if 'aux_outputs' in outputs:
-            for i, aux_outputs in enumerate(outputs['aux_outputs']):
-                for loss in self.losses:
-                    if loss == 'masks':
-                        # Intermediate masks losses are too costly to compute, we ignore them.
-                        continue
-                    kwargs = {}
-                    if loss == 'labels':
-                        # Logging is enabled only for the last layer
-                        kwargs = {'log': False}
-                    l_dict = self.get_loss(loss, aux_outputs, targets, num_coords, **kwargs)
-                    l_dict = {k + f'_{i}': v for k, v in l_dict.items()}
-                    losses.update(l_dict)
+            losses.update({loss: self.get_loss(loss, outputs, targets, num_coords)})
 
         return losses
 
