@@ -20,11 +20,11 @@ class Transformer(nn.Module):
     def __init__(self, d_model=512, nhead=8, num_encoder_layers=6,
                  num_decoder_layers=6, dim_feedforward=2048, dropout=0.1,
                  activation="relu", normalize_before=False,
-                 return_intermediate_dec=False):
+                 return_intermediate_dec=False, multi_enc_loss=False):
         super().__init__()
 
         encoder_layer = TransformerEncoderLayer(d_model, nhead, dim_feedforward,
-                                                dropout, activation, normalize_before)
+                                                dropout, activation, normalize_before, multi_enc_loss)
         encoder_norm = nn.LayerNorm(d_model) if normalize_before else None
         self.encoder = TransformerEncoder(encoder_layer, num_encoder_layers, encoder_norm)
 
@@ -128,7 +128,7 @@ class TransformerDecoder(nn.Module):
 class TransformerEncoderLayer(nn.Module):
 
     def __init__(self, d_model, nhead, dim_feedforward=2048, dropout=0.1,
-                 activation="relu", normalize_before=False):
+                 activation="relu", normalize_before=False, multi_enc_loss=False):
         super().__init__()
         self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
         # Implementation of Feedforward model
@@ -144,7 +144,7 @@ class TransformerEncoderLayer(nn.Module):
         self.activation = _get_activation_fn(activation)
         self.normalize_before = normalize_before
 
-        self.hm_encoder = EncoderHeatMap()
+        self.hm_encoder = EncoderHeatMap() if multi_enc_loss else None
 
     def with_pos_embed(self, tensor, pos: Optional[Tensor]):
         return tensor if pos is None else tensor + pos
@@ -186,7 +186,7 @@ class TransformerEncoderLayer(nn.Module):
             output = self.forward_pre(src, src_mask, src_key_padding_mask, pos)
         else:
             output = self.forward_post(src, src_mask, src_key_padding_mask, pos)
-        hm_encoder = self.hm_encoder(src)
+        hm_encoder = self.hm_encoder(src) if self.hm_encoder is not None else None
         return output, hm_encoder
 
 
@@ -314,6 +314,7 @@ def build_transformer(args):
         num_decoder_layers=args.dec_layers,
         normalize_before=args.pre_norm,
         return_intermediate_dec=True,
+        multi_enc_loss=args.multi_enc_loss,
     )
 
 
