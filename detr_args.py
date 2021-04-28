@@ -28,5 +28,5 @@ output_dir = '/home/itamar/thesis/outputs/detr'
 device = 'cuda'
 seed = 42
 world_size = 1
-multi_dec_loss = True
+multi_dec_loss = False
 multi_enc_loss = True

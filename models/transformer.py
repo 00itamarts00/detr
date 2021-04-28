@@ -8,7 +8,7 @@ Copy-paste from torch.nn.Transformer with modifications:
     * decoder returns a stack of activations from all decoding layers
 """
 import copy
-from typing import Optional, List
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -186,7 +186,7 @@ class TransformerEncoderLayer(nn.Module):
             output = self.forward_pre(src, src_mask, src_key_padding_mask, pos)
         else:
             output = self.forward_post(src, src_mask, src_key_padding_mask, pos)
-        hm_encoder = self.hm_encoder(output)
+        hm_encoder = self.hm_encoder(src)
         return output, hm_encoder
 
 
@@ -194,11 +194,15 @@ class EncoderHeatMap(nn.Module):
     def __init__(self):
         super().__init__()
         self.block1 = nn.Sequential(
-            nn.Conv2d(1, 32, kernel_size=3, stride=(1, 2), padding=1),
-            nn.BatchNorm2d(32),
+            nn.Conv2d(1, 16, kernel_size=3, stride=(1, 2), padding=1),
+            nn.BatchNorm2d(16),
             nn.ReLU(inplace=False))
         self.block2 = nn.Sequential(
-            nn.Conv2d(32, 68, kernel_size=3, stride=(1, 2), padding=1),
+            nn.Conv2d(16, 32, kernel_size=3, stride=(1, 2), padding=1),
+            nn.BatchNorm2d(32),
+            nn.ReLU(inplace=False))
+        self.block3 = nn.Sequential(
+            nn.Conv2d(32, 68, kernel_size=3, stride=1, padding=1),
             nn.BatchNorm2d(68),
             nn.ReLU(inplace=False))
 
@@ -206,6 +210,8 @@ class EncoderHeatMap(nn.Module):
         x = torch.transpose(x, 0, 1).unsqueeze(1)
         x = self.block1(x)
         x = self.block2(x)
+        x = self.block3(x)
+
         return x
 
 
