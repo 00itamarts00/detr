@@ -11,7 +11,6 @@ from packages.detr.util.misc import (NestedTensor, nested_tensor_from_tensor_lis
                                      accuracy, get_world_size, interpolate,
                                      is_dist_avail_and_initialized)
 from .backbone import build_backbone
-from .matcher import build_matcher
 from .segmentation import (DETRsegm, PostProcessPanoptic, PostProcessSegm,
                            dice_loss, sigmoid_focal_loss)
 from .transformer import build_transformer
@@ -52,13 +51,13 @@ class DETR(nn.Module):
                - "pred_coords": The normalized coords coordinates for all queries, represented as
                                (center_x, center_y, height, width). These values are normalized in [0, 1],
                                relative to the size of each individual image (disregarding possible padding).
-                               See PostProcess for information on how to retrieve the unnormalized bounding box.
+                               See PostProcess for information on how to retrieve the un-normalized bounding box.
                - "aux_outputs": Optional, only returned when auxilary losses are activated. It is a list of
-                                dictionnaries containing the two above keys for each decoder layer.
+                                dictionaries containing the two above keys for each decoder layer.
         """
         if isinstance(samples, (list, torch.Tensor)):
             samples = nested_tensor_from_tensor_list(samples)
-        features, pos = self.backbone(samples)
+        features, pos, hm_reg = self.backbone(samples)
 
         src, mask = features[-1].decompose()
         assert mask is not None
@@ -66,7 +65,7 @@ class DETR(nn.Module):
 
         outputs_class = self.class_embed(hs)
         outputs_coord = self.bbox_embed(hs).sigmoid()
-        out = {'pred_logits': outputs_class, 'pred_coords': outputs_coord}
+        out = {'pred_logits': outputs_class, 'pred_coords': outputs_coord, 'hm_output': hm_reg}
 
         return out, hm_encoder
 
@@ -252,25 +251,15 @@ def build(args):
         num_classes=num_classes,
         num_queries=args.num_queries,
     )
-    if args.masks:
-        model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
 
     weight_dict = {'loss_coords': args.coords_loss_coef}
 
     losses = ['coords']
-    if args.masks:
-        losses += ["masks"]
     criterion = SetCriterion(num_classes, weight_dict=weight_dict, eos_coef=args.eos_coef, losses=losses,
                              multi_dec_loss=args.multi_dec_loss)
     criterion.to(device)
-    postprocessors = {'bbox': PostProcess()}
-    if args.masks:
-        postprocessors['segm'] = PostProcessSegm()
-        if args.dataset_file == "coco_panoptic":
-            is_thing_map = {i: i <= 90 for i in range(201)}
-            postprocessors["panoptic"] = PostProcessPanoptic(is_thing_map, threshold=0.85)
 
     # for param in model.parameters():
     #     param.requires_grad = True
 
-    return model, criterion, postprocessors
+    return model, criterion

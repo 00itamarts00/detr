@@ -60,6 +60,51 @@ class FrozenBatchNorm2d(torch.nn.Module):
         return x * scale + bias
 
 
+class HMExtractor(nn.Module):
+    def __init__(self, num_channels=1024, bnorm=False):
+        super(HMExtractor, self).__init__()
+        self.ft1 = nn.Sequential(
+            nn.ConvTranspose2d(num_channels, 1024, 1, 1, padding=0, dilation=4),
+            nn.BatchNorm2d(1024),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(1024, 512, 1, 1, padding=0, dilation=6, output_padding=0),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+        )
+        self.ft2 = nn.Sequential(
+            nn.ConvTranspose2d(512, 512, 1, 1, padding=0, dilation=6, output_padding=0),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(512, 128, 3, 1, padding=0, dilation=6, output_padding=0),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+        )
+        self.ft3 = nn.Sequential(
+            nn.ConvTranspose2d(128, 128, 1, 1, padding=0, dilation=6, output_padding=2),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(128, 128, 3, 1, padding=0, dilation=6, output_padding=2),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+        )
+        self.ft4 = nn.Sequential(
+            nn.ConvTranspose2d(128, 128, 3, 1, padding=0, dilation=6, output_padding=0),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+            nn.ConvTranspose2d(128, 68, 3, 1, padding=0, dilation=4, output_padding=0),
+            nn.BatchNorm2d(68),
+            nn.ReLU(inplace=True),
+            nn.Dropout2d(0.5)
+        )
+
+    def forward(self, x):
+        x = self.ft1(x)
+        x = self.ft2(x)
+        x = self.ft3(x)
+        x = self.ft4(x)
+        return x
+
+
 class BackboneBase(nn.Module):
     def __init__(self, backbone: nn.Module, train_backbone: bool, num_channels: int, return_interm_layers: bool):
         super().__init__()
@@ -75,6 +120,7 @@ class BackboneBase(nn.Module):
 
     def forward(self, tensor_list: NestedTensor):
         xs = self.body(tensor_list.tensors)
+        hm = HMExtractor()
         out: Dict[str, NestedTensor] = {}
         for name, x in xs.items():
             m = tensor_list.mask
@@ -89,8 +135,8 @@ class Backbone(BackboneBase):
     def __init__(self, name: str,
                  train_backbone: bool,
                  return_interm_layers: bool,
-                 dilation: bool):
-        backbone = resnet50(pretrained=True, progress=True,
+                 dilation: bool, pretrained: bool):
+        backbone = resnet50(pretrained=pretrained, progress=True,
                             replace_stride_with_dilation=[False, False, dilation], norm_layer=FrozenBatchNorm2d)
         # backbone = getattr(torchvision.models, name)(
         #     replace_stride_with_dilation=[False, False, dilation],
@@ -100,25 +146,28 @@ class Backbone(BackboneBase):
 
 
 class Joiner(nn.Sequential):
-    def __init__(self, backbone, position_embedding):
-        super().__init__(backbone, position_embedding)
+    def __init__(self, backbone, position_embedding, hm_extractor=None):
+        super().__init__(backbone, position_embedding, hm_extractor)
 
     def forward(self, tensor_list: NestedTensor):
         xs = self[0](tensor_list)
+        outxs = {'0': xs.pop('3')} if xs.__len__() != 1 else xs
+        hmxs = self[2](xs['2'].tensors) if (xs.__len__() != 1) and (self[2] is not None) else None
         out: List[NestedTensor] = []
         pos = []
-        for name, x in xs.items():
+        for name, x in outxs.items():
             out.append(x)
             # position encoding
             pos.append(self[1](x).to(x.tensors.dtype))
-        return out, pos
+        return out, pos, hmxs
 
 
 def build_backbone(args):
     position_embedding = build_position_encoding(args)
     train_backbone = args.lr_backbone > 0
-    return_interm_layers = args.masks
-    backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation)
-    model = Joiner(backbone, position_embedding)
+    return_interm_layers = args.return_interm_layers
+    hm_extractor = HMExtractor() if args.heatmap_regression_via_backbone else None
+    backbone = Backbone(args.backbone, train_backbone, return_interm_layers, args.dilation, args.backbone_pretrained)
+    model = Joiner(backbone, position_embedding, hm_extractor=hm_extractor)
     model.num_channels = backbone.num_channels
     return model
